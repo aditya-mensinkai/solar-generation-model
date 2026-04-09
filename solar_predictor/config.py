@@ -19,12 +19,26 @@ TEMP_LOSS_THRESHOLD_C = 30         # above this, efficiency drops
 TEMP_LOSS_FACTOR = 0.90            # multiplier when above threshold
 DEFAULT_DUST_FACTOR = 0.95         # 5 % dust/soiling loss
 DEFAULT_SHADING = 1.0              # no shading (1.0 = full sun)
-# Actual days per month for accurate calculations (non-leap year)
+SOILING_FACTOR = 0.90              # 10% soiling loss for dusty regions (India)
+# Actual days per month for accurate calculations
+# February fixed at 28 days (non-leap approximation)
+# Impact negligible for annual estimation
 DAYS_PER_MONTH = {
     "01": 31, "02": 28, "03": 31, "04": 30,
     "05": 31, "06": 30, "07": 31, "08": 31,
     "09": 30, "10": 31, "11": 30, "12": 31
 }
+
+# Peak Sun Hours (PSH): effective hours of peak sunlight per day
+# Solar panels only generate energy during ~5–6 hours of peak sunlight
+# Using 24 hours would cause ~5× overestimation
+PEAK_SUN_HOURS = 5.5  # Average for India (configurable by location)
+
+# Advanced Physics Parameters
+TEMP_COEFF = 0.004          # 0.4% efficiency loss per °C above 25°C
+DEGRADATION_RATE = 0.005    # 0.5% annual panel degradation
+DEFAULT_TILT = 20.0         # default panel tilt (degrees)
+DEFAULT_AZIMUTH = 180.0     # default azimuth (180° = south-facing for India)
 
 # ── Hybrid Blending Weights ────────────────────────────────────────────────────
 ML_WEIGHT = 0.60
@@ -39,7 +53,7 @@ ML_MODEL_PATH = "solar_predictor/models/xgboost_correction.pkl"
 PREDICTION_MODE = "physics"
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-LOG_LEVEL = "INFO"
+LOG_LEVEL = "WARNING"  # Reduce verbosity in production; change to INFO for debugging
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 
 # ── Metadata ──────────────────────────────────────────────────────────────────

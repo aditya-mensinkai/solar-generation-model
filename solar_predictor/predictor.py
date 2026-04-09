@@ -24,7 +24,6 @@ from typing import Any, Dict
 from solar_predictor import config
 from solar_predictor.data_fetcher import fetch_pvgis_data
 from solar_predictor.ml_model import (
-    FEATURE_ORDER,
     build_feature_vector,
     load_model,
     predict_energy,
@@ -48,31 +47,30 @@ def predict_solar(
     lat: float,
     lon: float,
     mode: str = config.PREDICTION_MODE,
+    tilt: float = config.DEFAULT_TILT,
+    azimuth: float = config.DEFAULT_AZIMUTH,
+    shading_factor: float = config.DEFAULT_SHADING,
+    inverter_type: str = "string",
+    inverter_capacity_kw: float = None,
+    years_of_operation: int = 0,
 ) -> Dict[str, Any]:
     """
     Predict monthly and annual solar generation for a rooftop PV system.
 
     Args:
-        area: Rooftop / panel area in square metres.
-        lat:  Latitude in decimal degrees.
-        lon:  Longitude in decimal degrees.
-        mode: Override for prediction mode ("physics" | "ml" | "hybrid").
-              Defaults to config.PREDICTION_MODE.
+        area:                 Rooftop / panel area in square metres.
+        lat:                  Latitude in decimal degrees.
+        lon:                  Longitude in decimal degrees.
+        mode:                 Prediction mode ("physics" | "ml" | "hybrid").
+        tilt:                 Panel tilt angle in degrees (0–90).
+        azimuth:              Panel azimuth angle in degrees (0–360, 180=south).
+        shading_factor:       Shading factor 0–1 (1.0 = no shading).
+        inverter_type:        "string" or "micro" inverter type.
+        inverter_capacity_kw: Optional inverter capacity for clipping.
+        years_of_operation:   Years of panel operation (for degradation).
 
     Returns:
-        Dict conforming to the SolarSense output schema:
-        {
-            "monthly_generation":  {"01": float, ..., "12": float},
-            "annual_generation":   float,
-            "avg_daily_generation": float,
-            "seasonal_trend":      {"Winter": float, ...},
-            "metadata": {
-                "model_used":  "physics" | "ml" | "hybrid",
-                "error_margin": "±10%",
-                "data_source":  "PVGIS v5.2 (EU JRC)",
-                "note":        str,
-            }
-        }
+        Dict conforming to the SolarSense output schema with advanced factors.
 
     Raises:
         ValueError: On invalid inputs.
@@ -80,8 +78,20 @@ def predict_solar(
     """
     # ── Step 1: Validate ──────────────────────────────────────────────────────
     validate_inputs(area, lat, lon)
-    logger.info("predict_solar called: area=%.1f m², lat=%.4f, lon=%.4f, mode=%s",
-                area, lat, lon, mode)
+
+    # Validate advanced parameters
+    if not (0 <= tilt <= 90):
+        raise ValueError(f"Tilt must be 0–90°; got {tilt}")
+    if not (0 <= azimuth <= 360):
+        raise ValueError(f"Azimuth must be 0–360°; got {azimuth}")
+    if not (0 <= shading_factor <= 1):
+        raise ValueError(f"Shading factor must be 0–1; got {shading_factor}")
+    if inverter_type not in ("string", "micro"):
+        raise ValueError(f"Inverter type must be 'string' or 'micro'; got {inverter_type}")
+
+    logger.info("predict_solar called: area=%.1f m², lat=%.4f, lon=%.4f, mode=%s, "
+                "tilt=%.1f°, azimuth=%.1f°",
+                area, lat, lon, mode, tilt, azimuth)
 
     # ── Step 2: Fetch PVGIS data ──────────────────────────────────────────────
     raw_pvgis = fetch_pvgis_data(lat, lon)
@@ -90,7 +100,12 @@ def predict_solar(
     monthly_features = preprocess_pvgis(raw_pvgis)
 
     # ── Step 4: Physics model (always computed — used as base or fallback) ────
-    phys_monthly: MonthlyEnergy = monthly_energy(area, monthly_features)
+    phys_monthly: MonthlyEnergy = monthly_energy(
+        area, monthly_features,
+        tilt=tilt, azimuth=azimuth, shading_factor=shading_factor,
+        inverter_type=inverter_type, inverter_capacity_kw=inverter_capacity_kw,
+        years_of_operation=years_of_operation
+    )
     phys_annual: float = annual_energy(phys_monthly)
 
     # ── Step 5 & 6: ML and/or hybrid ─────────────────────────────────────────
@@ -150,6 +165,14 @@ def predict_solar(
                 "area_m2": area,
                 "lat": lat,
                 "lon": lon,
+            },
+            "advanced_factors": {
+                "tilt": tilt,
+                "azimuth": azimuth,
+                "shading_factor": shading_factor,
+                "inverter_type": inverter_type,
+                "inverter_capacity_kw": inverter_capacity_kw,
+                "years_of_operation": years_of_operation,
             },
         },
     }

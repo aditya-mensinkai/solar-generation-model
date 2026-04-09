@@ -21,8 +21,8 @@ logger = get_logger(__name__)
 
 
 def _cache_key(lat: float, lon: float) -> Tuple[float, float]:
-    """Round coordinates to 2 dp to increase cache hit rate for nearby points."""
-    return (round(lat, 2), round(lon, 2))
+    """Round coordinates to 3 dp for higher precision cache keys (~100m)."""
+    return (round(lat, 3), round(lon, 3))
 
 
 @lru_cache(maxsize=100)
@@ -40,8 +40,10 @@ def _cached_fetch(cache_key: Tuple[float, float], lat: float, lon: float) -> Dic
         "mountingplace": "building",
         "loss": 14,              # system losses % (dust, wiring, inverter); PVGIS accounts for this
         "outputformat": "json",
+        # PVGIS seriescalc uses a typical meteorological year (TMY),
+        # so multi-year ranges do not provide true averaging.
         "startyear": 2020,
-        "endyear": 2020,         # single reference year is enough
+        "endyear": 2020,
     }
 
     last_error: Optional[Exception] = None

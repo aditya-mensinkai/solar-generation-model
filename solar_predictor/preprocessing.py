@@ -86,6 +86,7 @@ def preprocess_pvgis(raw: Dict[str, Any]) -> MonthlyData:
 
         buckets[month_str]["GHI"].append(ghi)
         buckets[month_str]["TEMP"].append(temp)
+        # WIND retained for future ML features (cooling effect on panels)
         buckets[month_str]["WIND"].append(wind if wind is not None else 0.0)
         buckets[month_str]["DNI"].append(dni)
         buckets[month_str]["DHI"].append(dhi)
@@ -138,9 +139,12 @@ def _safe_float(value: Any) -> float | None:
 
 
 def _avg(values: List[float], month: str = "") -> float:
-    """Return the mean of *values*, or raise ValueError for an empty list."""
+    """Return the mean of *values*, or 0.0 for an empty list (with warning)."""
     if not values:
-        raise ValueError(f"No valid data for month {month}")
+        logger.warning("No valid data for month %s, defaulting to 0.0", month)
+        # Use 0.0 instead of artificial irradiance to avoid misleading results.
+        # Downstream model should handle missing data gracefully.
+        return 0.0
     return round(sum(values) / len(values), 4)
 
 

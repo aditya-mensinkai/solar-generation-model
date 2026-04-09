@@ -46,9 +46,10 @@ def build_feature_vector(monthly_features: Dict[str, float], area: float) -> Lis
         Note: HUMIDITY defaults to 0.0 if None (not available from PVGIS).
     """
     # Handle HUMIDITY which may be None (not available from PVGIS seriescalc)
+    # Use sentinel value -1 to indicate "not available" (avoids fake 0% humidity)
     humidity = monthly_features.get("HUMIDITY")
     if humidity is None:
-        humidity = 0.0  # Default for ML model when not available
+        humidity = -1.0
 
     return [
         monthly_features.get("GHI", 0.0),
