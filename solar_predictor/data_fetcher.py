@@ -1,0 +1,118 @@
+"""
+SolarSense Data Fetcher
+-----------------------
+Fetches hourly/daily irradiance and weather data from the PVGIS v5.2 API
+(European Commission Joint Research Centre).
+
+PVGIS returns hourly time-series data which we aggregate to monthly averages
+in preprocessing.py. Caching is a simple in-process dict keyed on (lat, lon);
+for production, swap it out for Redis or a file-based cache.
+"""
+
+import time
+from typing import Any, Dict, Optional, Tuple
+
+import requests
+
+from solar_predictor import config
+from solar_predictor.utils import get_logger
+
+logger = get_logger(__name__)
+
+# ── In-process cache ──────────────────────────────────────────────────────────
+_cache: Dict[Tuple[float, float], Dict[str, Any]] = {}
+
+
+def _cache_key(lat: float, lon: float) -> Tuple[float, float]:
+    """Round coordinates to 2 dp to increase cache hit rate for nearby points."""
+    return (round(lat, 2), round(lon, 2))
+
+
+def fetch_pvgis_data(lat: float, lon: float) -> Dict[str, Any]:
+    """
+    Fetch one year of hourly PV generation and meteorological data from PVGIS.
+
+    Uses the ``seriescalc`` endpoint which returns hourly time-series for a
+    reference meteorological year. Key parameters returned:
+
+    - ``P``   – PV system output power (W)  [used to derive GHI proxy]
+    - ``G(i)``– In-plane irradiance (W/m²)   → GHI
+    - ``T2m`` – Ambient temperature at 2 m (°C)
+    - ``WS10m``– Wind speed at 10 m (m/s)
+    - ``Int`` – Solar radiation reconstruction flag
+
+    Args:
+        lat: Latitude in decimal degrees.
+        lon: Longitude in decimal degrees.
+
+    Returns:
+        Raw PVGIS JSON response as a Python dict.
+
+    Raises:
+        RuntimeError: If all retry attempts fail.
+    """
+    key = _cache_key(lat, lon)
+    if key in _cache:
+        logger.info("Cache hit for (lat=%.2f, lon=%.2f)", lat, lon)
+        return _cache[key]
+
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "raddatabase": "PVGIS-NSRDB",
+        "usehorizon": 1,
+        "peakpower": 1,          # normalise to 1 kWp so we can scale by real area later
+        "pvtechchoice": "crystSi",
+        "mountingplace": "building",
+        "loss": 14,              # system losses % (dust, wiring, inverter); ~matches our physics model
+        "outputformat": "json",
+        "startyear": 2020,
+        "endyear": 2020,         # single reference year is enough
+    }
+
+    last_error: Optional[Exception] = None
+    for attempt in range(1, config.PVGIS_MAX_RETRIES + 1):
+        try:
+            logger.info(
+                "PVGIS request attempt %d/%d (lat=%.4f, lon=%.4f)",
+                attempt, config.PVGIS_MAX_RETRIES, lat, lon,
+            )
+            response = requests.get(
+                config.PVGIS_BASE_URL,
+                params=params,
+                timeout=config.PVGIS_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            data: Dict[str, Any] = response.json()
+            _cache[key] = data
+            logger.info("PVGIS fetch successful.")
+            return data
+
+        except requests.exceptions.HTTPError as exc:
+            logger.warning("HTTP error on attempt %d: %s", attempt, exc)
+            last_error = exc
+        except requests.exceptions.ConnectionError as exc:
+            logger.warning("Connection error on attempt %d: %s", attempt, exc)
+            last_error = exc
+        except requests.exceptions.Timeout as exc:
+            logger.warning("Timeout on attempt %d: %s", attempt, exc)
+            last_error = exc
+        except requests.exceptions.RequestException as exc:
+            logger.warning("Request error on attempt %d: %s", attempt, exc)
+            last_error = exc
+
+        if attempt < config.PVGIS_MAX_RETRIES:
+            wait = config.PVGIS_RETRY_BACKOFF * attempt
+            logger.info("Retrying in %.1f s…", wait)
+            time.sleep(wait)
+
+    raise RuntimeError(
+        f"PVGIS API unavailable after {config.PVGIS_MAX_RETRIES} attempts. "
+        f"Last error: {last_error}"
+    )
+
+
+def clear_cache() -> None:
+    """Purge the in-process PVGIS cache (useful for testing)."""
+    _cache.clear()
+    logger.debug("PVGIS cache cleared.")
