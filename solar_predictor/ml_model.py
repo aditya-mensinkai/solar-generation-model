@@ -43,13 +43,19 @@ def build_feature_vector(monthly_features: Dict[str, float], area: float) -> Lis
 
     Returns:
         List of 7 floats in FEATURE_ORDER.
+        Note: HUMIDITY defaults to 0.0 if None (not available from PVGIS).
     """
+    # Handle HUMIDITY which may be None (not available from PVGIS seriescalc)
+    humidity = monthly_features.get("HUMIDITY")
+    if humidity is None:
+        humidity = 0.0  # Default for ML model when not available
+
     return [
         monthly_features.get("GHI", 0.0),
         monthly_features.get("TEMP", 0.0),
         monthly_features.get("DNI", 0.0),
         monthly_features.get("DHI", 0.0),
-        monthly_features.get("HUMIDITY", 0.0),
+        humidity,
         monthly_features.get("WIND", 0.0),
         area,
     ]
@@ -108,8 +114,19 @@ def predict_energy(model: Any, features: List[float]) -> float:
 
     Returns:
         Predicted monthly kWh as a float.
+
+    Raises:
+        AssertionError: If feature vector length doesn't match FEATURE_ORDER.
     """
     import numpy as np  # type: ignore
+
+    # Validate feature vector length
+    expected_len = len(FEATURE_ORDER)
+    actual_len = len(features)
+    assert actual_len == expected_len, (
+        f"Invalid feature vector length: expected {expected_len}, got {actual_len}. "
+        f"Features must match FEATURE_ORDER: {FEATURE_ORDER}"
+    )
 
     x = np.array([features], dtype=float)
     prediction: float = float(model.predict(x)[0])

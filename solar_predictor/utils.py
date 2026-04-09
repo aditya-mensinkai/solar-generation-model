@@ -6,7 +6,7 @@ Shared helpers: logging factory, validation, and lightweight type aliases.
 
 import logging
 import sys
-from typing import Dict, Any
+from typing import Dict, Any, Union
 
 from solar_predictor import config
 
@@ -26,8 +26,9 @@ def get_logger(name: str) -> logging.Logger:
 
 # ── Type Aliases ──────────────────────────────────────────────────────────────
 
-MonthlyData = Dict[str, Dict[str, float]]   # e.g. {"01": {"GHI": 5.2, ...}}
-MonthlyEnergy = Dict[str, float]             # e.g. {"01": 123.4, ...}
+# MonthlyData values can include None for HUMIDITY (not available from PVGIS)
+MonthlyData = Dict[str, Dict[str, Union[float, None]]]   # e.g. {"01": {"GHI": 5.2, ...}}
+MonthlyEnergy = Dict[str, float]                         # e.g. {"01": 123.4, ...}
 
 
 # ── Validation Helpers ────────────────────────────────────────────────────────

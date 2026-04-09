@@ -12,12 +12,19 @@ PVGIS_RETRY_BACKOFF = 2.0          # seconds; doubles on each retry
 
 # ── Physics Model ──────────────────────────────────────────────────────────────
 PANEL_EFFICIENCY = 0.20            # standard monocrystalline panel
-PERFORMANCE_RATIO = 0.75           # accounts for inverter + wiring losses
+# NOTE: PVGIS "loss" parameter already accounts for system losses (inverter + wiring)
+# so we set PERFORMANCE_RATIO = 1.0 to avoid double-counting
+PERFORMANCE_RATIO = 1.0            # PVGIS already accounts for system losses
 TEMP_LOSS_THRESHOLD_C = 30         # above this, efficiency drops
 TEMP_LOSS_FACTOR = 0.90            # multiplier when above threshold
 DEFAULT_DUST_FACTOR = 0.95         # 5 % dust/soiling loss
 DEFAULT_SHADING = 1.0              # no shading (1.0 = full sun)
-DAYS_PER_MONTH = 30                # uniform approximation; kept here so it's easy to change
+# Actual days per month for accurate calculations (non-leap year)
+DAYS_PER_MONTH = {
+    "01": 31, "02": 28, "03": 31, "04": 30,
+    "05": 31, "06": 30, "07": 31, "08": 31,
+    "09": 30, "10": 31, "11": 30, "12": 31
+}
 
 # ── Hybrid Blending Weights ────────────────────────────────────────────────────
 ML_WEIGHT = 0.60

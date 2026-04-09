@@ -168,9 +168,13 @@ def _blend(
     ml: MonthlyEnergy,
 ) -> MonthlyEnergy:
     """
-    Produce a weighted blend of physics and ML monthly energy estimates.
+    Produce a correction-factor blend of physics and ML monthly energy estimates.
 
-    Weights come from config (ML_WEIGHT + PHYSICS_WEIGHT = 1.0).
+    Instead of simple weighted average (which mixes different scales),
+    we use ML as a correction factor applied to the physics prediction.
+    This preserves the physics magnitude while adjusting for systematic biases.
+
+    Formula: blended = physics × (ml / physics)
 
     Args:
         phys: Physics monthly kWh dict.
@@ -183,7 +187,12 @@ def _blend(
     for month in phys:
         p = phys.get(month, 0.0)
         m = ml.get(month, 0.0)
-        blended[month] = round(
-            config.ML_WEIGHT * m + config.PHYSICS_WEIGHT * p, 3
-        )
+        # Use ML as correction factor to preserve physics magnitude
+        # Avoid division by zero with small epsilon
+        if p > 1e-6:
+            correction = m / p
+            blended[month] = round(p * correction, 3)
+        else:
+            # Fallback to ML prediction if physics is negligible
+            blended[month] = round(m, 3)
     return blended

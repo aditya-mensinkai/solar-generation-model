@@ -5,11 +5,11 @@ Fetches hourly/daily irradiance and weather data from the PVGIS v5.2 API
 (European Commission Joint Research Centre).
 
 PVGIS returns hourly time-series data which we aggregate to monthly averages
-in preprocessing.py. Caching is a simple in-process dict keyed on (lat, lon);
-for production, swap it out for Redis or a file-based cache.
+in preprocessing.py. Caching uses functools.lru_cache for bounded memory.
 """
 
 import time
+from functools import lru_cache
 from typing import Any, Dict, Optional, Tuple
 
 import requests
@@ -19,52 +19,26 @@ from solar_predictor.utils import get_logger
 
 logger = get_logger(__name__)
 
-# ── In-process cache ──────────────────────────────────────────────────────────
-_cache: Dict[Tuple[float, float], Dict[str, Any]] = {}
-
 
 def _cache_key(lat: float, lon: float) -> Tuple[float, float]:
     """Round coordinates to 2 dp to increase cache hit rate for nearby points."""
     return (round(lat, 2), round(lon, 2))
 
 
-def fetch_pvgis_data(lat: float, lon: float) -> Dict[str, Any]:
+@lru_cache(maxsize=100)
+def _cached_fetch(cache_key: Tuple[float, float], lat: float, lon: float) -> Dict[str, Any]:
     """
-    Fetch one year of hourly PV generation and meteorological data from PVGIS.
-
-    Uses the ``seriescalc`` endpoint which returns hourly time-series for a
-    reference meteorological year. Key parameters returned:
-
-    - ``P``   – PV system output power (W)  [used to derive GHI proxy]
-    - ``G(i)``– In-plane irradiance (W/m²)   → GHI
-    - ``T2m`` – Ambient temperature at 2 m (°C)
-    - ``WS10m``– Wind speed at 10 m (m/s)
-    - ``Int`` – Solar radiation reconstruction flag
-
-    Args:
-        lat: Latitude in decimal degrees.
-        lon: Longitude in decimal degrees.
-
-    Returns:
-        Raw PVGIS JSON response as a Python dict.
-
-    Raises:
-        RuntimeError: If all retry attempts fail.
+    Internal cached fetch function.
+    cache_key is only used for cache hashing; lat/lon are the actual coordinates.
     """
-    key = _cache_key(lat, lon)
-    if key in _cache:
-        logger.info("Cache hit for (lat=%.2f, lon=%.2f)", lat, lon)
-        return _cache[key]
-
     params = {
         "lat": lat,
         "lon": lon,
-        "raddatabase": "PVGIS-NSRDB",
         "usehorizon": 1,
         "peakpower": 1,          # normalise to 1 kWp so we can scale by real area later
         "pvtechchoice": "crystSi",
         "mountingplace": "building",
-        "loss": 14,              # system losses % (dust, wiring, inverter); ~matches our physics model
+        "loss": 14,              # system losses % (dust, wiring, inverter); PVGIS accounts for this
         "outputformat": "json",
         "startyear": 2020,
         "endyear": 2020,         # single reference year is enough
@@ -82,9 +56,16 @@ def fetch_pvgis_data(lat: float, lon: float) -> Dict[str, Any]:
                 params=params,
                 timeout=config.PVGIS_TIMEOUT_SECONDS,
             )
+            # Log error details before raising
+            if response.status_code != 200:
+                logger.error("PVGIS ERROR RESPONSE: %s", response.text)
+                try:
+                    error_json = response.json()
+                    logger.error("PVGIS error JSON: %s", error_json)
+                except Exception:
+                    pass
             response.raise_for_status()
             data: Dict[str, Any] = response.json()
-            _cache[key] = data
             logger.info("PVGIS fetch successful.")
             return data
 
@@ -112,7 +93,35 @@ def fetch_pvgis_data(lat: float, lon: float) -> Dict[str, Any]:
     )
 
 
+def fetch_pvgis_data(lat: float, lon: float) -> Dict[str, Any]:
+    """
+    Fetch one year of hourly PV generation and meteorological data from PVGIS.
+
+    Uses the ``seriescalc`` endpoint which returns hourly time-series for a
+    reference meteorological year. Key parameters returned:
+
+    - ``P``   – PV system output power (W)  [used to derive GHI proxy]
+    - ``G(i)``– In-plane irradiance (W/m²)   → GHI
+    - ``T2m`` – Ambient temperature at 2 m (°C)
+    - ``WS10m``– Wind speed at 10 m (m/s)
+    - ``Int`` – Solar radiation reconstruction flag
+
+    Args:
+        lat: Latitude in decimal degrees.
+        lon: Longitude in decimal degrees.
+
+    Returns:
+        Raw PVGIS JSON response as a Python dict.
+
+    Raises:
+        RuntimeError: If all retry attempts fail.
+    """
+    key = _cache_key(lat, lon)
+    logger.info("Fetching PVGIS data for (lat=%.2f, lon=%.2f)", lat, lon)
+    return _cached_fetch(key, lat, lon)
+
+
 def clear_cache() -> None:
     """Purge the in-process PVGIS cache (useful for testing)."""
-    _cache.clear()
+    _cached_fetch.cache_clear()
     logger.debug("PVGIS cache cleared.")

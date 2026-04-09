@@ -21,6 +21,7 @@ def adjusted_energy(
     area: float,
     ghi: float,
     temp: float,
+    month: str,
     shading: float = config.DEFAULT_SHADING,
     dust_factor: float = config.DEFAULT_DUST_FACTOR,
 ) -> float:
@@ -28,7 +29,10 @@ def adjusted_energy(
     Estimate monthly energy output (kWh) for one month using a physics model.
 
     The formula follows a standard PV yield approach:
-        E = Area × Efficiency × GHI × PR × Days
+        E = Area × Efficiency × GHI × Hours × PR × Days
+
+    CRITICAL: GHI from PVGIS is average POWER (W/m²), not energy.
+    We must multiply by 24 hours to convert to daily energy (Wh/m²/day).
 
     Losses applied:
         - Temperature derating  (if temp > threshold)
@@ -39,6 +43,7 @@ def adjusted_energy(
         area:        Panel / rooftop area in m².
         ghi:         Mean daily global horizontal irradiance for the month (W/m²).
         temp:        Mean ambient temperature for the month (°C).
+        month:       Month string ("01"-"12") for days lookup.
         shading:     Shading factor 0–1 (1.0 = no shading). Default 1.0.
         dust_factor: Fractional loss from soiling. Default 0.95 (5 % loss).
 
@@ -57,14 +62,25 @@ def adjusted_energy(
     efficiency *= dust_factor
 
     # Performance ratio adjusted for shading
+    # NOTE: PVGIS already accounts for system losses via its "loss" parameter,
+    # so PERFORMANCE_RATIO should be 1.0 to avoid double-counting.
     pr: float = config.PERFORMANCE_RATIO * shading
 
-    # Convert W/m² → kWh/m²/day × 30 days; area × efficiency gives kWh
-    energy_kwh: float = area * efficiency * (ghi / 1000.0) * pr * config.DAYS_PER_MONTH
+    # CRITICAL FIX: GHI is power (W/m²), not energy.
+    # Convert to energy: W/m² × 24 hours = Wh/m²/day
+    # Then: area × efficiency × daily energy × PR × days = monthly kWh
+    hours_per_day: float = 24.0
+    days_in_month: int = config.DAYS_PER_MONTH.get(month, 30)
+
+    # Formula: area (m²) × efficiency × (GHI × 24 / 1000) × PR × days
+    energy_kwh: float = (
+        area * efficiency * (ghi * hours_per_day / 1000.0) * pr * days_in_month
+    )
 
     logger.debug(
-        "adjusted_energy: area=%.1f m², ghi=%.1f W/m², temp=%.1f °C → %.2f kWh",
-        area, ghi, temp, energy_kwh,
+        "adjusted_energy: area=%.1f m², ghi=%.1f W/m², temp=%.1f °C, "
+        "month=%s, days=%d → %.2f kWh",
+        area, ghi, temp, month, days_in_month, energy_kwh,
     )
     return round(energy_kwh, 3)
 
@@ -91,7 +107,8 @@ def monthly_energy(
     for month, data in monthly_ghi.items():
         ghi: float = data["GHI"]
         temp: float = data["TEMP"]
-        energy_output[month] = adjusted_energy(area, ghi, temp)
+        # Pass month to adjusted_energy for correct days per month lookup
+        energy_output[month] = adjusted_energy(area, ghi, temp, month)
 
     logger.info("Physics monthly energy computed for %d months.", len(energy_output))
     return energy_output

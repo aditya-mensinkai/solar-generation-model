@@ -4,17 +4,17 @@ SolarSense Preprocessing
 Converts raw PVGIS hourly time-series JSON into clean monthly-average feature
 dicts used by both the physics model and the ML model.
 
-Output schema (strict):
+Output schema:
 {
     "01": { "GHI": float, "TEMP": float, "DNI": float,
-            "DHI": float, "HUMIDITY": float, "WIND": float },
+            "DHI": float, "HUMIDITY": float|None, "WIND": float },
     ...
     "12": { ... }
 }
 
 PVGIS does not return separate DNI/DHI/Humidity fields from the seriescalc
 endpoint. We use in-plane irradiance G(i) as GHI proxy, derive a reasonable
-DNI split, and mark humidity as unavailable (NaN → 0.0 after cleaning).
+DNI split, and set humidity to None (not available from seriescalc).
 """
 
 import math
@@ -61,8 +61,9 @@ def preprocess_pvgis(raw: Dict[str, Any]) -> MonthlyData:
         raise ValueError("PVGIS returned an empty hourly dataset.")
 
     # Accumulate raw values per month
+    # NOTE: HUMIDITY is not available from PVGIS seriescalc endpoint
     buckets: Dict[str, Dict[str, List[float]]] = defaultdict(
-        lambda: {k: [] for k in ("GHI", "TEMP", "WIND", "DNI", "DHI", "HUMIDITY")}
+        lambda: {k: [] for k in ("GHI", "TEMP", "WIND", "DNI", "DHI")}
     )
 
     skipped = 0
@@ -88,7 +89,7 @@ def preprocess_pvgis(raw: Dict[str, Any]) -> MonthlyData:
         buckets[month_str]["WIND"].append(wind if wind is not None else 0.0)
         buckets[month_str]["DNI"].append(dni)
         buckets[month_str]["DHI"].append(dhi)
-        buckets[month_str]["HUMIDITY"].append(0.0)   # not available from PVGIS seriescalc
+        # HUMIDITY not accumulated - not available from PVGIS seriescalc
 
     if skipped:
         logger.warning("Skipped %d malformed PVGIS records during preprocessing.", skipped)
@@ -96,13 +97,14 @@ def preprocess_pvgis(raw: Dict[str, Any]) -> MonthlyData:
     monthly: MonthlyData = {}
     for month in _ALL_MONTHS:
         data = buckets.get(month, {})
+        # Validate that each month has data - raise error if empty
         monthly[month] = {
-            "GHI":      _avg(data.get("GHI", [])),
-            "TEMP":     _avg(data.get("TEMP", [])),
-            "DNI":      _avg(data.get("DNI", [])),
-            "DHI":      _avg(data.get("DHI", [])),
-            "HUMIDITY": _avg(data.get("HUMIDITY", [])),
-            "WIND":     _avg(data.get("WIND", [])),
+            "GHI":      _avg(data.get("GHI", []), month),
+            "TEMP":     _avg(data.get("TEMP", []), month),
+            "DNI":      _avg(data.get("DNI", []), month),
+            "DHI":      _avg(data.get("DHI", []), month),
+            "HUMIDITY": None,  # PVGIS seriescalc does not provide humidity
+            "WIND":     _avg(data.get("WIND", []), month),
         }
 
     _validate_monthly(monthly)
@@ -135,9 +137,11 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
-def _avg(values: List[float]) -> float:
-    """Return the mean of *values*, or 0.0 for an empty list."""
-    return round(sum(values) / len(values), 4) if values else 0.0
+def _avg(values: List[float], month: str = "") -> float:
+    """Return the mean of *values*, or raise ValueError for an empty list."""
+    if not values:
+        raise ValueError(f"No valid data for month {month}")
+    return round(sum(values) / len(values), 4)
 
 
 def _erbs_split(ghi: float) -> tuple[float, float]:
