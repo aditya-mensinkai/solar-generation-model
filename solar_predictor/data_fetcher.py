@@ -38,7 +38,9 @@ def _cached_fetch(cache_key: Tuple[float, float], lat: float, lon: float) -> Dic
         "peakpower": 1,          # normalise to 1 kWp so we can scale by real area later
         "pvtechchoice": "crystSi",
         "mountingplace": "building",
-        "loss": 14,              # system losses % (dust, wiring, inverter); PVGIS accounts for this
+        # IMPORTANT: loss reduced to 10% because dust_factor is applied in physics model
+        # PVGIS 14% includes ~4% dust; we apply custom 5% dust_factor separately
+        "loss": 10,              # reduced system losses (wiring, inverter only)
         "outputformat": "json",
         # PVGIS seriescalc uses a typical meteorological year (TMY),
         # so multi-year ranges do not provide true averaging.

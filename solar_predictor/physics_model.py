@@ -93,7 +93,7 @@ def inverter_clipping_loss(area: float, inverter_capacity_kw: float) -> float:
 
 def adjusted_energy(
     area: float,
-    ghi: float,
+    monthly_energy_per_kwp: float,
     temp: float,
     month: str,
     tilt: float = config.DEFAULT_TILT,
@@ -105,31 +105,39 @@ def adjusted_energy(
     dust_factor: float = config.DEFAULT_DUST_FACTOR,
 ) -> float:
     """
-    Estimate monthly energy output (kWh) for one month using a physics model.
+    Estimate monthly energy output (kWh) for one month using PVGIS power data.
 
-    The formula:
-        E = System_kW × Daily_Irradiance_kWh/m² × Efficiency × Days
+    Uses PVGIS "P" values (hourly power output for 1 kWp system) which are
+    pre-summed to monthly energy values (kWh/kWp). This avoids the PSH
+    conversion error and double-counting of losses.
+
+    Formula:
+        E = Monthly_Energy_Per_kWp × System_kW × Efficiency
 
     Where:
+        - Monthly_Energy_Per_kWp = sum of hourly "P" values / 1000 (kWh/kWp)
         - System_kW = Area × 0.2 (200W/m² for modern panels)
-        - Daily_Irradiance_kWh/m² = GHI × PSH / 1000
-        - Efficiency = product of all loss factors
+        - Efficiency = product of optional correction factors
 
-    CRITICAL: PVGIS G(i) already includes panel orientation (tilt + azimuth)
-    and system losses (~14%). Do NOT reapply orientation corrections.
+    CRITICAL: PVGIS "P" already includes:
+        - Panel efficiency
+        - System losses (inverter, wiring)
+        - Tilt and azimuth orientation
+        - Temperature effects (partial)
+        - Soiling effects (partial via loss parameter)
 
-    Advanced factors applied:
-        - Temperature coefficient (linear 0.4%/°C above 25°C)
-        - Shading losses (non-linear based on inverter type)
-        - Dust / soiling loss
-        - Inverter clipping (optional)
-        - Panel degradation over time
+    ONLY apply these optional corrections:
+        - Temperature coefficient (fine-tuning)
+        - Shading losses (user-specified)
+        - Dust/soiling adjustment (user-specified)
+        - Inverter clipping (if specified)
+        - Panel degradation (if specified)
 
     Args:
         area:                 Panel / rooftop area in m².
-        ghi:                  Mean daily global horizontal irradiance (W/m²).
+        monthly_energy_per_kwp: Monthly energy per kWp from PVGIS (kWh/kWp).
         temp:                 Mean ambient temperature for the month (°C).
-        month:                Month string ("01"-"12") for days lookup.
+        month:                Month string ("01"-"12") for logging.
         tilt:                 Panel tilt angle in degrees (0 = flat).
         azimuth:              Panel azimuth angle (180° = south-facing).
         shading_factor:       Shading factor 0–1 (1.0 = no shading).
@@ -141,40 +149,36 @@ def adjusted_energy(
     Returns:
         Estimated monthly energy in kWh.
     """
-    # IMPORTANT:
-    # PVGIS already accounts for panel efficiency and system losses.
-    # Setting efficiency and PR to 1.0 avoids double counting.
+    # System size scaling: 200W/m² assumption for modern panels
+    # 20 m² × 0.2 kW/m² = 4 kW system
+    system_kw: float = area * 0.2
+
+    # Base energy from PVGIS (already for 1 kWp system)
+    # PVGIS "P" summed over month = kWh/kWp
+    # Scale by actual system size
+    base_monthly_kwh: float = monthly_energy_per_kwp * system_kw
+
+    # Apply ONLY optional corrections (not already in PVGIS)
     efficiency: float = 1.0
 
-    # Temperature coefficient loss (linear model)
-    # Panels lose ~0.4% efficiency per °C above 25°C
+    # Temperature coefficient loss (fine-tuning)
+    # PVGIS accounts for some temperature effects, but we apply user correction
     efficiency *= temperature_loss(temp)
     logger.debug("Temperature loss applied: factor=%.3f", temperature_loss(temp))
 
-    # PVGIS G(i) already includes panel orientation (tilt + azimuth)
-    # Do NOT apply orientation corrections again
+    # PVGIS "P" already includes tilt/azimuth, system losses, and base efficiency
+    # Do NOT apply these again
 
-    # Shading losses (non-linear based on inverter type)
+    # Shading losses (user-specified, not in PVGIS)
     efficiency *= shading_loss(shading_factor, inverter_type)
     logger.debug("Shading loss applied: factor=%.3f, inverter=%s", shading_factor, inverter_type)
 
-    # Soiling / dust loss (user-defined factor)
-    # Apply user-defined dust/soiling factor only once
-    # Avoid double-counting losses
+    # Dust/soiling loss (user-specified override)
+    # PVGIS has some soiling via loss parameter, but allow user adjustment
     efficiency *= dust_factor
 
-    # PVGIS is normalized to 1 kWp system
-    # Convert area → system size (kW) before scaling energy
-    system_kw: float = area * 0.2  # 200W/m² for modern panels
-
-    # Convert average irradiance (W/m²) to daily energy (kWh/m²)
-    # GHI is average over all hours (including night), so multiply by 24h
-    daily_irradiance_kwh: float = ghi * 24.0 / 1000.0
-
-    days_in_month: int = config.DAYS_PER_MONTH.get(month, 30)
-
-    # Monthly energy = system size × irradiance × efficiency × days
-    energy_kwh: float = system_kw * daily_irradiance_kwh * efficiency * days_in_month
+    # Calculate energy with corrections
+    energy_kwh: float = base_monthly_kwh * efficiency
 
     # Inverter clipping: apply loss factor instead of hard truncation
     # In reality, clipping only occurs during peak hours (5-15% loss)
@@ -190,9 +194,9 @@ def adjusted_energy(
         logger.debug("Degradation applied: %.1f%% after %d years", degradation * 100, years_of_operation)
 
     logger.debug(
-        "adjusted_energy: area=%.1f m², ghi=%.1f W/m², temp=%.1f °C, "
-        "month=%s, days=%d, tilt=%.1f°, azimuth=%.1f° → %.2f kWh",
-        area, ghi, temp, month, days_in_month, tilt, azimuth, energy_kwh,
+        "adjusted_energy: area=%.1f m², monthly_energy_per_kwp=%.1f kWh/kWp, temp=%.1f °C, "
+        "month=%s, tilt=%.1f°, azimuth=%.1f° → %.2f kWh",
+        area, monthly_energy_per_kwp, temp, month, tilt, azimuth, energy_kwh,
     )
     return round(energy_kwh, 3)
 
@@ -228,10 +232,11 @@ def monthly_energy(
     energy_output: MonthlyEnergy = {}
 
     for month, data in monthly_ghi.items():
-        ghi: float = data["GHI"]
+        # Use PVGIS direct energy values (kWh/kWp) - most accurate
+        monthly_energy_per_kwp: float = data.get("ENERGY_KWH_KWP", 0.0)
         temp: float = data["TEMP"]
         energy_output[month] = adjusted_energy(
-            area, ghi, temp, month,
+            area, monthly_energy_per_kwp, temp, month,
             tilt=tilt, azimuth=azimuth, shading_factor=shading_factor,
             inverter_type=inverter_type, inverter_capacity_kw=inverter_capacity_kw,
             years_of_operation=years_of_operation

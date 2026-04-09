@@ -28,7 +28,8 @@ from solar_predictor.utils import get_logger
 
 logger = get_logger(__name__)
 
-# Legacy feature ordering (kept for backwards compatibility)
+# Legacy feature ordering DEPRECATED — using named feature dict instead
+# Modern feature names: temperature (not TEMP), wind_speed (not WIND), rooftop_area (not AREA)
 FEATURE_ORDER: List[str] = ["GHI", "TEMP", "DNI", "DHI", "HUMIDITY", "WIND", "AREA"]
 
 # Module-level cache to avoid reloading model on every call
@@ -70,7 +71,7 @@ def build_feature_vector(
     # Handle HUMIDITY which may be None (not available from PVGIS seriescalc)
     humidity = monthly_features.get("HUMIDITY")
     if humidity is None:
-        humidity = -1.0
+        humidity = 0.0
 
     # Build feature dict with new model column names
     feature_dict = {
@@ -155,21 +156,41 @@ def predict_energy(model: Any, features: Dict[str, float]) -> float:
         pipeline = model["pipeline"]
         feature_cols = model.get("feature_cols", [])
 
+        # Validate feature_cols exists to prevent silent mismatch
+        if not feature_cols:
+            raise ValueError("Model missing feature_cols — cannot map features correctly")
+
+        # STRICT VALIDATION: Check for missing features (prevents silent wrong predictions)
+        missing = [col for col in feature_cols if col not in features]
+        if missing:
+            raise ValueError(f"Missing features for ML model: {missing}")
+
+        # Warn about extra features (indicates potential name mismatch)
+        extra = [k for k in features.keys() if k not in feature_cols]
+        if extra:
+            logger.warning(f"Extra unused features: {extra}")
+
         # Extract features in the order expected by the model
         feature_list = [features.get(col, 0.0) for col in feature_cols]
+        logger.debug(f"Feature columns expected: {feature_cols}")
+        logger.debug(f"Feature vector used: {feature_list}")
+
         x = np.array([feature_list], dtype=float)
         prediction: float = float(pipeline.predict(x)[0])
+        prediction = max(prediction, 0.0)  # clamp negatives
     else:
         # Legacy format: direct XGBRegressor
-        # Convert dict to list in FEATURE_ORDER
+        # IMPORTANT: Feature names MUST match training exactly
+        # If mismatched → model gives WRONG predictions silently
+        # Modern names used (matching build_feature_vector output):
         feature_list = [
             features.get("GHI", 0.0),
-            features.get("TEMP", 0.0),
+            features.get("temperature", 0.0),      # modern name (was TEMP)
             features.get("DNI", 0.0),
             features.get("DHI", 0.0),
-            features.get("HUMIDITY", 0.0),
-            features.get("WIND", 0.0),
-            features.get("rooftop_area", 0.0),
+            features.get("humidity", 0.0),           # modern name (was HUMIDITY)
+            features.get("wind_speed", 0.0),       # modern name (was WIND)
+            features.get("rooftop_area", 0.0),     # modern name (was AREA)
         ]
         x = np.array([feature_list], dtype=float)
         prediction = float(model.predict(x)[0])

@@ -4,6 +4,11 @@ SolarSense Configuration
 All tunable constants live here. No magic numbers elsewhere.
 """
 
+import os
+
+# Base directory for absolute path resolution (ensures portability)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ── Data Source ────────────────────────────────────────────────────────────────
 PVGIS_BASE_URL = "https://re.jrc.ec.europa.eu/api/v5_2/seriescalc"
 PVGIS_TIMEOUT_SECONDS = 30
@@ -17,9 +22,13 @@ PANEL_EFFICIENCY = 0.20            # standard monocrystalline panel
 PERFORMANCE_RATIO = 1.0            # PVGIS already accounts for system losses
 TEMP_LOSS_THRESHOLD_C = 30         # above this, efficiency drops
 TEMP_LOSS_FACTOR = 0.90            # multiplier when above threshold
+# Dust / soiling loss factor (applied ONCE in physics model)
+# Represents reduction due to dirt, pollution, etc.
+# DO NOT duplicate or apply again elsewhere
 DEFAULT_DUST_FACTOR = 0.95         # 5 % dust/soiling loss
+
 DEFAULT_SHADING = 1.0              # no shading (1.0 = full sun)
-SOILING_FACTOR = 0.90              # 10% soiling loss for dusty regions (India)
+
 # Actual days per month for accurate calculations
 # February fixed at 28 days (non-leap approximation)
 # Impact negligible for annual estimation
@@ -29,10 +38,10 @@ DAYS_PER_MONTH = {
     "09": 30, "10": 31, "11": 30, "12": 31
 }
 
-# Peak Sun Hours (PSH): effective hours of peak sunlight per day
-# Solar panels only generate energy during ~5–6 hours of peak sunlight
-# Using 24 hours would cause ~5× overestimation
-PEAK_SUN_HOURS = 5.5  # Average for India (configurable by location)
+# PVGIS Calculation Mode
+# True: Use PVGIS "P" (power output) directly - most accurate
+# False: Use G(i) irradiance with manual calculations (legacy, not recommended)
+USE_PVGIS_DIRECT_POWER = True
 
 # Advanced Physics Parameters
 TEMP_COEFF = 0.004          # 0.4% efficiency loss per °C above 25°C
@@ -45,7 +54,8 @@ ML_WEIGHT = 0.60
 PHYSICS_WEIGHT = 0.40              # ML_WEIGHT + PHYSICS_WEIGHT must equal 1.0
 
 # ── Model Persistence ─────────────────────────────────────────────────────────
-ML_MODEL_PATH = "solar_predictor/xgboost_correction.pkl"
+# Absolute path ensures model loads correctly in all environments (Docker, different working dirs)
+ML_MODEL_PATH = os.path.join(BASE_DIR, "xgboost_correction.pkl")
 
 # ── Prediction Mode ───────────────────────────────────────────────────────────
 # Options: "physics" | "ml" | "hybrid"

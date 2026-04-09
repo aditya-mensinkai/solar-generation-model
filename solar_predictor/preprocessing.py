@@ -26,10 +26,15 @@ from solar_predictor.utils import MonthlyData, get_logger
 logger = get_logger(__name__)
 
 # PVGIS JSON keys we care about
+# G(i) = in-plane irradiance W/m² (kept for ML features)
+# P = Power output W for 1 kWp system (USE THIS for direct energy calculation)
+# T2m = ambient temperature °C
+# WS10m = wind speed m/s
 _FIELD_MAP = {
-    "G(i)": "GHI",    # in-plane irradiance W/m²
-    "T2m":  "TEMP",   # ambient temperature °C
-    "WS10m": "WIND",  # wind speed m/s
+    "G(i)": "GHI",         # in-plane irradiance W/m²
+    "P": "POWER",          # Power output W for 1 kWp system
+    "T2m":  "TEMP",        # ambient temperature °C
+    "WS10m": "WIND",       # wind speed m/s
 }
 
 # Months that are present in any given year
@@ -62,8 +67,9 @@ def preprocess_pvgis(raw: Dict[str, Any]) -> MonthlyData:
 
     # Accumulate raw values per month
     # NOTE: HUMIDITY is not available from PVGIS seriescalc endpoint
+    # NOTE: POWER values ("P") are summed to get monthly energy, not averaged
     buckets: Dict[str, Dict[str, List[float]]] = defaultdict(
-        lambda: {k: [] for k in ("GHI", "TEMP", "WIND", "DNI", "DHI")}
+        lambda: {k: [] for k in ("GHI", "TEMP", "WIND", "DNI", "DHI", "POWER")}
     )
 
     skipped = 0
@@ -74,6 +80,7 @@ def preprocess_pvgis(raw: Dict[str, Any]) -> MonthlyData:
             continue
 
         ghi = _safe_float(record.get("G(i)"))
+        power = _safe_float(record.get("P"))  # Power output for 1 kWp (W)
         temp = _safe_float(record.get("T2m"))
         wind = _safe_float(record.get("WS10m"))
 
@@ -85,6 +92,24 @@ def preprocess_pvgis(raw: Dict[str, Any]) -> MonthlyData:
         dni, dhi = _erbs_split(ghi)
 
         buckets[month_str]["GHI"].append(ghi)
+        # POWER: PVGIS "P" is hourly power output (W) for 1 kWp system
+        # Each hourly value directly converts to Wh (W × 1h = Wh)
+        # If "P" is not available, we calculate from G(i)
+        if power is not None:
+            buckets[month_str]["POWER"].append(power)
+        else:
+            # Derive from G(i): G(i) is in-plane irradiance (W/m²)
+            # For 1 kWp system with typical panels: system area ≈ 5 m² (at 20% efficiency)
+            # Power = G(i) × area × efficiency = G(i) × 5 × 0.2 = G(i) × 1.0
+            # But this would give Wh per hour for 5m² panels
+            # Instead, use PVGIS's implicit scaling: G(i) of 1000 W/m² → 1000 W for 1 kWp
+            # So P ≈ G(i) when peakpower=1 in API call
+            # This is an approximation; actual PVGIS has temperature/loss adjustments
+            # For now: approximate power = G(i) × system_efficiency_factor
+            # 1 kWp system with 10% losses → effective collection ~1000 W
+            # Using G(i) directly as proxy (PVGIS already accounts for tilt/losses)
+            power_proxy = ghi * 1.0 if ghi is not None else 0.0
+            buckets[month_str]["POWER"].append(power_proxy)
         buckets[month_str]["TEMP"].append(temp)
         # WIND retained for future ML features (cooling effect on panels)
         buckets[month_str]["WIND"].append(wind if wind is not None else 0.0)
@@ -99,13 +124,21 @@ def preprocess_pvgis(raw: Dict[str, Any]) -> MonthlyData:
     for month in _ALL_MONTHS:
         data = buckets.get(month, {})
         # Validate that each month has data - raise error if empty
+
+        # POWER (W) → ENERGY (kWh/kWp): Sum hourly power values and convert
+        # PVGIS "P" is power output (W) for a 1 kWp system per hour
+        # Summing all hourly P values gives Wh/kWp, divide by 1000 for kWh/kWp
+        power_values = data.get("POWER", [])
+        monthly_energy_kwh_kwp = _sum(power_values) / 1000.0 if power_values else 0.0
+
         monthly[month] = {
-            "GHI":      _avg(data.get("GHI", []), month),
-            "TEMP":     _avg(data.get("TEMP", []), month),
-            "DNI":      _avg(data.get("DNI", []), month),
-            "DHI":      _avg(data.get("DHI", []), month),
-            "HUMIDITY": None,  # PVGIS seriescalc does not provide humidity
-            "WIND":     _avg(data.get("WIND", []), month),
+            "GHI":             _avg(data.get("GHI", []), month),
+            "TEMP":            _avg(data.get("TEMP", []), month),
+            "DNI":             _avg(data.get("DNI", []), month),
+            "DHI":             _avg(data.get("DHI", []), month),
+            "HUMIDITY":        None,  # PVGIS seriescalc does not provide humidity
+            "WIND":            _avg(data.get("WIND", []), month),
+            "ENERGY_KWH_KWP":  monthly_energy_kwh_kwp,  # Monthly energy per kWp
         }
 
     _validate_monthly(monthly)
@@ -146,6 +179,13 @@ def _avg(values: List[float], month: str = "") -> float:
         # Downstream model should handle missing data gracefully.
         return 0.0
     return round(sum(values) / len(values), 4)
+
+
+def _sum(values: List[float]) -> float:
+    """Return the sum of *values*, or 0.0 for an empty list."""
+    if not values:
+        return 0.0
+    return round(sum(values), 4)
 
 
 def _erbs_split(ghi: float) -> tuple[float, float]:
