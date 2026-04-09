@@ -10,8 +10,8 @@
 ### 1. Clone the Repository
 
 ```bash
-git clone <your-repo-url>
-cd solar-sense
+git clone https://github.com/aditya-mensinkai/solar-generation-model.git
+cd solar-generation-model
 ```
 
 ---
