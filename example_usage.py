@@ -29,7 +29,7 @@ def main() -> None:
     print(f"{'='*60}\n")
 
     try:
-        result = predict_solar(area=area, lat=lat, lon=lon, mode="physics")
+        result = predict_solar(area=area, lat=lat, lon=lon, mode="hybrid")
         print(json.dumps(result, indent=2))
     except RuntimeError as exc:
         print(f"[ERROR] Could not fetch PVGIS data: {exc}", file=sys.stderr)

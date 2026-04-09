@@ -45,12 +45,12 @@ ML_WEIGHT = 0.60
 PHYSICS_WEIGHT = 0.40              # ML_WEIGHT + PHYSICS_WEIGHT must equal 1.0
 
 # ── Model Persistence ─────────────────────────────────────────────────────────
-ML_MODEL_PATH = "solar_predictor/models/xgboost_correction.pkl"
+ML_MODEL_PATH = "solar_predictor/xgboost_correction.pkl"
 
 # ── Prediction Mode ───────────────────────────────────────────────────────────
 # Options: "physics" | "ml" | "hybrid"
 # "ml" and "hybrid" fall back to "physics" when no trained model exists.
-PREDICTION_MODE = "physics"
+PREDICTION_MODE = "hybrid"
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = "WARNING"  # Reduce verbosity in production; change to INFO for debugging

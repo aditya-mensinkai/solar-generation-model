@@ -128,11 +128,46 @@ def predict_solar(
             final_monthly = phys_monthly
             model_used = "physics"
         else:
-            # Run ML predictions for every month
+            # Run ML predictions for every month with safety clamps
             ml_monthly: MonthlyEnergy = {}
+            month_num_map = {
+                "01": 1, "02": 2, "03": 3, "04": 4, "05": 5, "06": 6,
+                "07": 7, "08": 8, "09": 9, "10": 10, "11": 11, "12": 12
+            }
+
             for month, features in monthly_features.items():
-                fvec = build_feature_vector(features, area)
-                ml_monthly[month] = predict_energy(ml_model, fvec)
+                phys_val = phys_monthly.get(month, 0.0)
+                try:
+                    # Build feature vector with location and system parameters
+                    fvec = build_feature_vector(
+                        monthly_features=features,
+                        area=area,
+                        lat=lat,
+                        lon=lon,
+                        month=month_num_map.get(month, 1),
+                        tilt=tilt,
+                        azimuth=azimuth,
+                    )
+                    pred = predict_energy(ml_model, fvec)
+
+                    # SAFETY CLAMPS: Prevent unrealistic ML predictions
+                    # Clamp ML prediction to 0.5x - 1.5x of physics estimate
+                    lower_bound = phys_val * 0.5
+                    upper_bound = phys_val * 1.5
+
+                    if pred < 0:
+                        pred = 0.0
+                    if pred > upper_bound:
+                        pred = upper_bound
+                    if pred < lower_bound:
+                        pred = lower_bound
+
+                    ml_monthly[month] = pred
+                    logger.debug("%s: Physics=%.2f, ML=%.2f (clamped)", month, phys_val, pred)
+
+                except Exception as e:
+                    logger.warning("ML failed for month %s: %s — using physics fallback", month, e)
+                    ml_monthly[month] = phys_val
 
             if mode == "ml":
                 final_monthly = ml_monthly
@@ -191,13 +226,13 @@ def _blend(
     ml: MonthlyEnergy,
 ) -> MonthlyEnergy:
     """
-    Produce a correction-factor blend of physics and ML monthly energy estimates.
+    Produce a weighted average blend of physics and ML monthly energy estimates.
 
-    Instead of simple weighted average (which mixes different scales),
-    we use ML as a correction factor applied to the physics prediction.
-    This preserves the physics magnitude while adjusting for systematic biases.
+    Uses configured weights (ML_WEIGHT + PHYSICS_WEIGHT = 1.0) to combine
+    physics-based and ML-based predictions. This provides a stable hybrid
+    that leverages ML corrections while maintaining physics explainability.
 
-    Formula: blended = physics × (ml / physics)
+    Formula: blended = ML_WEIGHT × ml + PHYSICS_WEIGHT × physics
 
     Args:
         phys: Physics monthly kWh dict.
@@ -210,12 +245,7 @@ def _blend(
     for month in phys:
         p = phys.get(month, 0.0)
         m = ml.get(month, 0.0)
-        # Use ML as correction factor to preserve physics magnitude
-        # Avoid division by zero with small epsilon
-        if p > 1e-6:
-            correction = m / p
-            blended[month] = round(p * correction, 3)
-        else:
-            # Fallback to ML prediction if physics is negligible
-            blended[month] = round(m, 3)
+        # Weighted average blend (60% ML, 40% physics by default)
+        blended_val = config.ML_WEIGHT * m + config.PHYSICS_WEIGHT * p
+        blended[month] = round(blended_val, 3)
     return blended
